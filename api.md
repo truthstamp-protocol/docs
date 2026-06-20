@@ -39,9 +39,9 @@ Credits are charged **only on success** — any failure is automatically refunde
 
 | Content type | Cost |
 |--------------|------|
-| Text | 1 credit |
-| URL | 2 credits |
-| File | 3 credits *(not in v1)* |
+| Text | 1 credit (stamp or reveal) |
+| URL | 2 credits (stamp or reveal) |
+| File | 3 credits *(not in v1; reveal of pre-existing sealed files works)* |
 
 ---
 
@@ -198,6 +198,60 @@ is `null` and `display_title` shows a generic label.
 
 ---
 
+
+## Reveal a sealed stamp
+
+```
+POST /stamps/:proof_id/reveal
+```
+
+Reveal a sealed stamp on-chain after its `sealed_until` date has passed. This
+uploads the content to Arweave and records the reveal on MegaETH. After reveal,
+`GET /stamps/:proof_id` returns the unsealed content.
+
+Only the original stamp creator can reveal. Cost mirrors the underlying type:
+text = 1, URL = 2, file = 3 credits. **Credits are refunded on any failure.**
+
+```bash
+curl -X POST ".../api-v1/stamps/27/reveal" \
+  -H "Authorization: Bearer ts_live_YOUR_KEY" \
+  -H "apikey: YOUR_ANON_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: my-reveal-001"
+```
+
+Response `200`:
+
+```json
+{
+  "success": true,
+  "proof_id": 27,
+  "revealed": true,
+  "tx_hash": "0xa490f00c...d3e3d",
+  "arweave_uri": "ar://H3els0gCLLEW...jXc",
+  "proof_url": "https://truthstamp.io/proof.html?id=27",
+  "credits_charged": 1,
+  "api_credits_remaining": 192
+}
+```
+
+### Error conditions
+
+| HTTP | error | Meaning |
+|------|-------|---------|
+| 403 | `not_owner` | Only the stamp creator can reveal it |
+| 400 | `not_sealed` | The stamp isn't a sealed stamp |
+| 400 | `still_sealed` | Reveal date hasn't passed yet |
+| 409 | `already_revealed` | This stamp was already revealed |
+| 402 | `insufficient_api_credits` | Not enough API credits |
+| 422 | `reveal_failed` | On-chain or Arweave failure; credits refunded |
+
+> Reveal is synchronous and typically takes 15&ndash;30 seconds (Arweave upload
+> + on-chain tx). For revealing many stamps, loop client-side respecting your
+> rate limit.
+
+---
+
 ## Verify content
 
 ```
@@ -286,6 +340,11 @@ human-readable `message`.
 | 409 | `duplicate_content` | This exact content was already stamped |
 | 429 | `rate_limited` | Per-minute request limit exceeded |
 | 422 | `stamp_failed` | Stamping failed; credits refunded |
+| 403 | `not_owner` | Reveal: only the stamp creator can reveal |
+| 400 | `not_sealed` | Reveal: stamp isn't sealed |
+| 400 | `still_sealed` | Reveal: reveal date hasn't passed yet |
+| 409 | `already_revealed` | Reveal: stamp was already revealed |
+| 422 | `reveal_failed` | Reveal: failed; credits refunded |
 
 > On any failure during stamp creation, your API credits are automatically
 > refunded — you are never charged for a stamp that did not succeed.
