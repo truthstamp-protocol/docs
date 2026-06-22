@@ -1,5 +1,3 @@
-# docs
-Documents related to Truthstamp
 # TruthStamp API (v1)
 
 Create permanent, independently verifiable on-chain proofs from any application,
@@ -37,11 +35,15 @@ as a hash; if you lose one, revoke it and create a new one.
 API usage draws from a dedicated API credit balance, separate from the web app.
 Credits are charged **only on success** — any failure is automatically refunded.
 
-| Content type | Cost |
-|--------------|------|
-| Text | 1 credit (stamp or reveal) |
-| URL | 2 credits (stamp or reveal) |
-| File | 3 credits *(not in v1; reveal of pre-existing sealed files works)* |
+| Operation | Cost |
+|-----------|------|
+| Create text stamp | 1 credit |
+| Create URL stamp | 2 credits |
+| Reveal text seal | 1 credit |
+| Reveal URL seal | 2 credits |
+| Verify content | Free |
+| Bitcoin archive | Preview — no charge yet |
+| File stamp / reveal | 3 credits *(not in v1)* |
 
 ---
 
@@ -53,6 +55,7 @@ Credits are charged **only on success** — any failure is automatically refunde
 | Sealed text | ✅ Supported | Hidden until a reveal date you choose |
 | Hash-only | ✅ Supported | Only the fingerprint is stored; content stays with you |
 | URL | ✅ Supported | URL + page snapshot recorded on Arweave |
+| Bitcoin archive | ⏳ Preview | Requests queued; processing coming soon |
 | File | ❌ Coming soon | Not available in API v1 |
 
 ---
@@ -108,8 +111,6 @@ Response `200`:
 
 ### Example — sealed text
 
-Content stays hidden until `sealed_until`.
-
 ```bash
 curl -X POST ".../api-v1/stamps" \
   -H "Authorization: Bearer ts_live_YOUR_KEY" \
@@ -125,9 +126,6 @@ curl -X POST ".../api-v1/stamps" \
 ```
 
 ### Example — hash-only
-
-Only the fingerprint is recorded on-chain. The content is never stored or sent
-to TruthStamp's storage. Prove you held something without revealing it.
 
 ```bash
 curl -X POST ".../api-v1/stamps" \
@@ -194,10 +192,9 @@ Response `200` (public stamp):
 ```
 
 For a sealed stamp before its reveal date, or any hash-only stamp, `content`
-is `null` and `display_title` shows a generic label.
+is `null`. The hash is always present.
 
 ---
-
 
 ## Reveal a sealed stamp
 
@@ -246,71 +243,115 @@ Response `200`:
 | 402 | `insufficient_api_credits` | Not enough API credits |
 | 422 | `reveal_failed` | On-chain or Arweave failure; credits refunded |
 
-> Reveal is synchronous and typically takes 15&ndash;30 seconds (Arweave upload
-> + on-chain tx). For revealing many stamps, loop client-side respecting your
-> rate limit.
+> Reveal is synchronous and typically takes 15–30 seconds. For revealing many
+> stamps, loop client-side respecting your rate limit.
 
 ---
 
-## Verify content
+## Bitcoin archive *(Preview)*
 
 ```
-POST /verify
+POST /stamps/:proof_id/bitcoin-archive
+GET  /stamps/:proof_id/bitcoin-archive
 ```
 
-Check whether content has been stamped. Provide either the raw `content`
-(hashed with SHA-256) or a `content_hash` directly. Returns the **earliest**
-stamp of that hash — proving when it first existed. Works even for hash-only
-stamps. Does **not** consume credits.
+Embed a TSA-1 proof manifest into the Bitcoin blockchain via OP_RETURN —
+independently verifiable on Bitcoin mainnet, entirely separate from
+TruthStamp's infrastructure.
+
+> **Preview:** Requests are queued immediately but Bitcoin processing is
+> currently handled manually on a best-effort basis. No credits are charged
+> during the preview period. Poll the GET endpoint to track status.
+
+### POST — queue an archive request
+
+The stamp must be public or a revealed seal. Returns immediately with a
+`job_id` for status tracking.
 
 ```bash
-curl -X POST ".../api-v1/verify" \
+curl -X POST ".../api-v1/stamps/27/bitcoin-archive" \
   -H "Authorization: Bearer ts_live_YOUR_KEY" \
   -H "apikey: YOUR_ANON_KEY" \
   -H "Content-Type: application/json" \
-  -d '{ "content": "secret content only I know" }'
+  -H "Idempotency-Key: btc-archive-001"
 ```
 
-Response `200` (found):
+Response `202`:
 
 ```json
 {
   "success": true,
-  "verified": true,
-  "content_hash": "0x64836320...058229b4",
-  "first_stamped_at": "2026-06-17T14:39:34+00:00",
-  "proof_id": 22,
-  "visibility": "hash_only",
-  "total_stamps_of_this_hash": 1,
-  "proof_url": "https://truthstamp.io/proof.html?id=22"
+  "job_id": "5c856f50-e907-4ba3-ba12-349635752fcf",
+  "proof_id": 27,
+  "status": "queued",
+  "processing_enabled": false,
+  "credits_charged": 0,
+  "message": "Bitcoin archive queued. Processing is currently in preview..."
 }
 ```
 
-Response `200` (not found):
+### GET — check archive status
+
+```bash
+curl ".../api-v1/stamps/27/bitcoin-archive" \
+  -H "Authorization: Bearer ts_live_YOUR_KEY" \
+  -H "apikey: YOUR_ANON_KEY"
+```
+
+Response `200`:
 
 ```json
 {
   "success": true,
-  "verified": false,
-  "content_hash": "0xb94d27b9...2efcde9",
-  "message": "No stamp found for this content hash..."
+  "proof_id": 27,
+  "bitcoin_txid": null,
+  "bitcoin_archive_status": null,
+  "bitcoin_archived_at": null,
+  "job": {
+    "job_id": "5c856f50-e907-4ba3-ba12-349635752fcf",
+    "status": "queued",
+    "txid": null,
+    "created_at": "2026-06-22T08:51:11.289683+00:00",
+    "confirmed_at": null,
+    "last_error": null
+  },
+  "processing_enabled": false
 }
 ```
+
+### Job status values
+
+| status | Meaning |
+|--------|---------|
+| `queued` | Request recorded, waiting for processing |
+| `broadcast` | Bitcoin TX broadcast, waiting for confirmation |
+| `confirmed` | Confirmed in a Bitcoin block — `bitcoin_txid` populated |
+| `failed` | Processing failed — check `last_error` |
+
+### Error conditions
+
+| HTTP | error | Meaning |
+|------|-------|---------|
+| 403 | `not_owner` | Only the stamp creator can archive it |
+| 400 | `stamp_not_confirmed` | Stamp not yet confirmed on MegaETH |
+| 400 | `not_archivable` | Stamp must be public or a revealed seal |
+| 409 | `already_archived` | This stamp is already archived to Bitcoin |
 
 ---
 
 ## Idempotency
 
-To safely retry stamp creation without duplicates, send an `Idempotency-Key`
-header with a unique value (e.g. a UUID) per logical request:
+Send an `Idempotency-Key` header with a unique value (e.g. a UUID) per logical
+request. If a request with the same key already succeeded, the original response
+is returned and no new operation is performed or charged.
 
 ```
 -H "Idempotency-Key: 7c9e6679-7425-40de-944b-e07fc1f90ae7"
 ```
 
-If a request with the same key already succeeded, the original response is
-returned and no new stamp is created or charged. Keys are remembered for 24
-hours. Only successful responses are stored, so failed requests can be retried.
+Keys are remembered for 24 hours. Only successful responses are stored, so
+failed requests can be retried safely. Supported on:
+`POST /stamps`, `POST /stamps/:id/reveal`, `POST /stamps/:id/bitcoin-archive`.
 
 ---
 
@@ -322,9 +363,6 @@ returns `429 rate_limited`. Need a higher limit? Get in touch.
 ---
 
 ## Error codes
-
-Errors return `success: false`, a machine-readable `error`, and a
-human-readable `message`.
 
 | HTTP | error | Meaning |
 |------|-------|---------|
@@ -340,14 +378,17 @@ human-readable `message`.
 | 409 | `duplicate_content` | This exact content was already stamped |
 | 429 | `rate_limited` | Per-minute request limit exceeded |
 | 422 | `stamp_failed` | Stamping failed; credits refunded |
-| 403 | `not_owner` | Reveal: only the stamp creator can reveal |
+| 403 | `not_owner` | Reveal / archive: only the creator can do this |
 | 400 | `not_sealed` | Reveal: stamp isn't sealed |
 | 400 | `still_sealed` | Reveal: reveal date hasn't passed yet |
 | 409 | `already_revealed` | Reveal: stamp was already revealed |
 | 422 | `reveal_failed` | Reveal: failed; credits refunded |
+| 400 | `not_archivable` | Archive: stamp must be public or revealed |
+| 409 | `already_archived` | Archive: stamp already archived to Bitcoin |
 
-> On any failure during stamp creation, your API credits are automatically
-> refunded — you are never charged for a stamp that did not succeed.
+> On any failure during stamp creation or reveal, your API credits are
+> automatically refunded — you are never charged for an operation that did
+> not succeed.
 
 ---
 
